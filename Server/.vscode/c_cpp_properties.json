@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Qt Server",
+            "includePath": [
+                "${workspaceFolder}",
+                "E:/Qt/5.14.2/mingw73_64/include/**"
+            ],
+            "defines": [
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "E:/Qt/Tools/mingw730_64/bin/g++.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}

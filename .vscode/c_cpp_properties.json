@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "E:/Qt/5.14.2/mingw73_64/include/**",
+                "E:/Qt/5.14.2/mingw73_64/include/QtCore",
+                "E:/Qt/5.14.2/mingw73_64/include/QtGui",
+                "E:/Qt/5.14.2/mingw73_64/include/QtWidgets",
+                "E:/Qt/5.14.2/mingw73_64/include/QtNetwork",
+                "E:/Qt/Tools/mingw730_64/include/**",
+                "E:/Qt/Tools/mingw730_64/lib/gcc/x86_64-w64-mingw32/7.3.0/include/**",
+                "E:/Qt/Tools/mingw730_64/lib/gcc/x86_64-w64-mingw32/7.3.0/include/c++/**",
+                "E:/Qt/Tools/mingw730_64/x86_64-w64-mingw32/include/**",
+                "E:/Qt/Tools/mingw730_64/opt/include/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "E:/Qt/Tools/mingw730_64/bin/g++.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}

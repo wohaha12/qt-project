@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build client",
+            "type": "shell",
+            "command": "E:/Qt/5.14.2/mingw73_64/bin/qmake.exe",
+            "args": [
+                "Client.pro",
+                "-spec",
+                "win32-g++",
+                "CONFIG+=debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/Client"
+            },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "make client",
+            "type": "shell",
+            "command": "mingw32-make",
+            "options": {
+                "cwd": "${workspaceFolder}/Client"
+            },
+            "problemMatcher": "$gcc"
+        }
+    ]
+}
