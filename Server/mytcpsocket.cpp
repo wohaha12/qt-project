@@ -66,6 +66,11 @@ PDU *MyTcpSocket::handleMsg(PDU *pdu)
         return mh->uploadFileSlice();
     case ENUM_MSG_TYPE_UPLOAD_FILE_COMPLETE_REQUEST:
         return mh->uploadFileComplete();
+    // 下载相关消息类型
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_REQUEST:
+        return mh->downloadFile();
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_DATA_REQUEST:
+        return mh->downloadFileData();
 
     default:
         return NULL;

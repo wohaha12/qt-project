@@ -190,6 +190,22 @@ void Client::handlerMsg(PDU *pdu)
     case ENUM_MSG_TYPE_UPLOAD_FILE_COMPLETE_RESPOND:
         rh->uploadFileComplete();
         break;
+        
+    // 下载相关消息处理
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_RESPOND:
+        rh->downloadFile(pdu);
+        break;
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_DATA:
+        rh->downloadFileData(pdu);
+        break;
+    case ENUM_MSG_TYPE_DOWNLOAD_FILE_COMPLETE:
+        rh->downloadFileComplete(pdu);
+        break;
+        
+    // 重命名响应处理
+    case ENUM_MSG_TYPE_RENAME_FILE_RESPOND:
+        rh->renameFileResponse(pdu);
+        break;
 
     default:
         break;

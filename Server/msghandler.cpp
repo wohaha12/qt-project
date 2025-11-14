@@ -7,9 +7,27 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QCryptographicHash>
 MsgHandler::MsgHandler()
 {
 
+}
+
+// 计算文件MD5的方法
+QString MsgHandler::calculateFileMD5(const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qDebug() << "无法打开文件进行MD5计算:" << filePath;
+        return "";
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Md5);
+    while (!file.atEnd()) {
+        hash.addData(file.read(8192)); // 分块读取，避免内存占用过大
+    }
+    file.close();
+    return hash.result().toHex();
 }
 
 PDU *MsgHandler::regist()
@@ -329,17 +347,11 @@ PDU *MsgHandler::uploadFile()
             qDebug() << "创建上传目录：" << dirPath;
         }
         
-        m_fUploadFile.setFileName(m_strUploadPath);
-        bool ret = m_fUploadFile.open(QIODevice::WriteOnly);
+        // 分片上传初始化：只创建目录，不打开文件
+        qDebug() << "初始化分片上传环境，路径：" << m_strUploadPath;
         
-        if (!ret) {
-            qWarning() << "打开上传文件失败：" << m_strUploadPath << "错误：" << m_fUploadFile.errorString();
-        }
-
-        // 上传成功后保存文件哈希
-        if (ret && !md5.isEmpty()) {
-            OperateDB::getInstance().addFileHash(md5, m_strUploadPath, m_iUploadFileSize, caFileName);
-        }
+        // 为分片上传做准备，保存文件路径信息
+        bool ret = true;
 
         PDU* respdu = mkPDU(0);
         memcpy(respdu->caData, &ret, sizeof(ret));
@@ -423,54 +435,250 @@ PDU *MsgHandler::shareFlie()
 
 PDU *MsgHandler::shareFlieAgree()
 {
-    QString strRecvPath = QString("%1/%2").arg(Server::getInstance().m_strRootPath).arg(pdu->caData);
+    QString strRecvUserName = QString("%1").arg(pdu->caData);
     QString strShareFilePath = pdu->caMsg;
+    
+    // 构建接收方的根目录路径
+    QString strRecvRootPath = QString("%1/%2").arg(Server::getInstance().m_strRootPath).arg(strRecvUserName);
+    
+    // 从分享文件路径中提取文件名
     int index = strShareFilePath.lastIndexOf('/');
     QString strFileName = strShareFilePath.right(strShareFilePath.size()-index-1);
-    strRecvPath = strRecvPath+ '/' + strFileName;
+    
+    // 构建完整的目标文件路径
+    QString strRecvPath = strRecvRootPath + '/' + strFileName;
+    
+    qDebug() << "分享文件路径:" << strShareFilePath;
+    qDebug() << "接收方用户名:" << strRecvUserName;
+    qDebug() << "接收方根路径:" << strRecvRootPath;
+    qDebug() << "目标文件路径:" << strRecvPath;
+    
+    // 检查源文件是否存在
     QFileInfo fileInfo(strShareFilePath);
-    qDebug()<<"strShareFilePath"<<strShareFilePath
-            <<"strRecvPath"<<strRecvPath;
-    bool ret = true;
-    if(fileInfo.isFile()){
-        ret = QFile::copy(strShareFilePath,strRecvPath);
-        qDebug()<<"shareFlieAgree ret:"<<ret;
-    }else if(fileInfo.isDir()){
-        ret = copyDir(strShareFilePath,strRecvPath);
+    if (!fileInfo.exists()) {
+        qDebug() << "分享文件不存在:" << strShareFilePath;
+        PDU* respdu = mkPDU();
+        bool ret = false;
+        memcpy(respdu->caData, &ret, sizeof(bool));
+        respdu->uiType = ENUM_MSG_TYPE_SHARE_FILE_AGREE_RESPOND;
+        return respdu;
     }
+    
+    // 确保接收方的根目录存在
+    QDir dir;
+    if (!dir.exists(strRecvRootPath)) {
+        if (!dir.mkpath(strRecvRootPath)) {
+            qDebug() << "无法创建接收方目录:" << strRecvRootPath;
+            PDU* respdu = mkPDU();
+            bool ret = false;
+            memcpy(respdu->caData, &ret, sizeof(bool));
+            respdu->uiType = ENUM_MSG_TYPE_SHARE_FILE_AGREE_RESPOND;
+            return respdu;
+        }
+    }
+    
+    bool ret = true;
+    if (fileInfo.isFile()) {
+        // 检查目标文件是否已存在
+        if (QFile::exists(strRecvPath)) {
+            // 如果文件已存在，添加时间戳后缀
+            QString timestamp = QString::number(QDateTime::currentMSecsSinceEpoch());
+            QString baseName = strFileName;
+            QString suffix = "";
+            
+            int dotIndex = strFileName.lastIndexOf('.');
+            if (dotIndex != -1) {
+                baseName = strFileName.left(dotIndex);
+                suffix = strFileName.right(strFileName.size() - dotIndex);
+            }
+            
+            strRecvPath = strRecvRootPath + '/' + baseName + "_" + timestamp + suffix;
+            qDebug() << "文件已存在，使用新路径:" << strRecvPath;
+        }
+        
+        ret = QFile::copy(strShareFilePath, strRecvPath);
+        if (ret) {
+            qDebug() << "文件复制成功:" << strRecvPath;
+        } else {
+            qDebug() << "文件复制失败:" << strShareFilePath << "到" << strRecvPath;
+        }
+    } else if (fileInfo.isDir()) {
+        // 检查目标目录是否已存在
+        if (dir.exists(strRecvPath)) {
+            // 如果目录已存在，添加时间戳后缀
+            QString timestamp = QString::number(QDateTime::currentMSecsSinceEpoch());
+            strRecvPath = strRecvRootPath + '/' + strFileName + "_" + timestamp;
+            qDebug() << "目录已存在，使用新路径:" << strRecvPath;
+        }
+        
+        ret = copyDir(strShareFilePath, strRecvPath);
+    }
+    
     PDU* respdu = mkPDU();
-    memcpy(respdu->caData,&ret,sizeof(bool));
-    respdu->uiType = ENUM_MSG_TYPE_SHARE_FILE_AGREE_RESPOND;  // 修复：应该是uiType而不是uiMsgLen
+    memcpy(respdu->caData, &ret, sizeof(bool));
+    respdu->uiType = ENUM_MSG_TYPE_SHARE_FILE_AGREE_RESPOND;
+    return respdu;
+}
+
+// 处理文件下载请求
+PDU *MsgHandler::downloadFile()
+{
+    // 从PDU中获取文件名和路径
+    QString strFileName = pdu->caData;
+    QString strFilePath = pdu->caMsg;
+    qDebug() << "下载文件路径:" << strFilePath;
+    qDebug() << "下载文件名:" << strFileName;
+    
+    // 检查文件是否存在
+    QFileInfo fileInfo(strFilePath);
+    bool bSuccess = fileInfo.exists() && fileInfo.isFile();
+    
+    // 准备响应数据
+    uint uiMsgLen = sizeof(bool) + sizeof(uint) + sizeof(uint); // success标志 + 文件大小 + 当前位置
+    PDU* respdu = mkPDU(uiMsgLen);
+    
+    // 填充响应数据
+    char* pData = (char*)respdu->caMsg;
+    memcpy(pData, &bSuccess, sizeof(bool));
+    pData += sizeof(bool);
+    
+    if (bSuccess) {
+        // 文件存在，设置文件大小和初始位置
+        uint uiFileSize = static_cast<uint>(fileInfo.size());
+        uint uiCurPos = 0;
+        
+        memcpy(pData, &uiFileSize, sizeof(uint));
+        pData += sizeof(uint);
+        memcpy(pData, &uiCurPos, sizeof(uint));
+        
+        // 保存下载信息到成员变量
+        m_strDownloadPath = strFilePath;
+        m_iFileSize = fileInfo.size();
+        m_iSentSize = 0;
+        
+        qDebug() << "文件存在，大小:" << fileInfo.size() << "字节";
+    } else {
+        // 文件不存在，设置默认值
+        uint uiFileSize = 0;
+        uint uiCurPos = 0;
+        
+        memcpy(pData, &uiFileSize, sizeof(uint));
+        pData += sizeof(uint);
+        memcpy(pData, &uiCurPos, sizeof(uint));
+        
+        qDebug() << "文件不存在:" << strFilePath;
+    }
+    
+    // 复制文件名到caData
+    memcpy(respdu->caData, strFileName.toStdString().c_str(), qMin(32, (int)strFileName.size()));
+    respdu->uiType = ENUM_MSG_TYPE_DOWNLOAD_FILE_RESPOND;
+    return respdu;
+}
+
+// 处理文件数据下载请求
+PDU *MsgHandler::downloadFileData()
+{
+    // 打开文件
+    QFile file(m_strDownloadPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qDebug() << "无法打开文件进行下载:" << m_strDownloadPath;
+        return nullptr;
+    }
+    
+    // 定位到上次发送的位置
+    file.seek(m_iSentSize);
+    
+    // 读取数据（一次最多读取8192字节）
+    QByteArray data = file.read(8192);
+    int dataLen = data.size();
+    bool bLastBlock = (dataLen == 0 || (m_iSentSize + dataLen) >= m_iFileSize);
+    
+    // 准备响应数据
+    uint uiMsgLen = sizeof(bool) + sizeof(uint) + dataLen; // 是否最后一块 + 当前位置 + 数据
+    PDU* respdu = mkPDU(uiMsgLen);
+    
+    // 填充响应数据
+    char* pData = (char*)respdu->caMsg;
+    memcpy(pData, &bLastBlock, sizeof(bool));
+    pData += sizeof(bool);
+    memcpy(pData, &m_iSentSize, sizeof(uint));
+    pData += sizeof(uint);
+    
+    // 如果有数据，复制数据到PDU
+    if (dataLen > 0) {
+        memcpy(pData, data.data(), dataLen);
+        
+        // 更新已发送大小
+        m_iSentSize += dataLen;
+        
+        qDebug() << "发送数据块，位置:" << m_iSentSize - dataLen << "长度:" << dataLen 
+                 << "剩余:" << m_iFileSize - m_iSentSize;
+    }
+    
+    respdu->uiType = ENUM_MSG_TYPE_DOWNLOAD_FILE_DATA;
+    file.close();
+    
+    // 如果是最后一块，发送完成通知
+    if (bLastBlock) {
+        // 创建完成通知PDU
+        PDU* completePdu = mkPDU(sizeof(bool));
+        bool success = true;
+        memcpy(completePdu->caMsg, &success, sizeof(bool));
+        completePdu->uiType = ENUM_MSG_TYPE_DOWNLOAD_FILE_COMPLETE;
+        
+        // 立即发送完成通知
+        m_tcpSocket->write((char*)completePdu, completePdu->uiPDULen);
+        delete completePdu;
+        
+        qDebug() << "文件下载完成:" << m_strDownloadPath;
+    }
+    
     return respdu;
 }
 
 bool MsgHandler::copyDir(QString strSrcDir, QString strDestDir)
 {
     QDir dir;
-    dir.mkdir(strDestDir);
+    
+    // 创建目标目录
+    if (!dir.mkdir(strDestDir)) {
+        qDebug() << "无法创建目标目录：" << strDestDir;
+        return false;
+    }
+    
     dir.setPath(strSrcDir);
     QFileInfoList fileInfoList = dir.entryInfoList();
     bool ret = true;
-    QString srcTmp;
-    QString destTmp;
-    for(int i=0;i<fileInfoList.size();i++){
-        if(fileInfoList[i].isFile()){
-            srcTmp = strSrcDir + '/' + fileInfoList[i].fileName();
-            destTmp = strDestDir+ '/' + fileInfoList[i].fileName();
-            if(!QFile::copy(srcTmp,destTmp)){
+    
+    for(int i=0; i<fileInfoList.size(); i++) {
+        QFileInfo fileInfo = fileInfoList[i];
+        QString fileName = fileInfo.fileName();
+        
+        // 跳过 . 和 ..
+        if (fileName == "." || fileName == "..") {
+            continue;
+        }
+        
+        QString srcPath = strSrcDir + '/' + fileName;
+        QString destPath = strDestDir + '/' + fileName;
+        
+        if (fileInfo.isFile()) {
+            // 复制文件
+            if (!QFile::copy(srcPath, destPath)) {
+                qDebug() << "复制文件失败：" << srcPath << "到" << destPath;
                 ret = false;
-            }else if(fileInfoList[i].isDir()){
-                if(fileInfoList[i].fileName() == QString(".") || fileInfoList[i].fileName() == QString("..")){
-                    continue;
-                }
+            } else {
+                qDebug() << "成功复制文件：" << srcPath << "到" << destPath;
             }
-            srcTmp = strSrcDir + '/' + fileInfoList[i].fileName();
-            destTmp = strDestDir + '/' + fileInfoList[i].fileName();
-            if(!copyDir(srcTmp,destTmp)){
+        } else if (fileInfo.isDir()) {
+            // 递归复制目录
+            if (!copyDir(srcPath, destPath)) {
+                qDebug() << "复制目录失败：" << srcPath << "到" << destPath;
                 ret = false;
             }
         }
     }
+    
     return ret;
 }
 
@@ -636,6 +844,13 @@ PDU* MsgHandler::uploadFileComplete()
             
             if (mergeSuccess) {
                 qDebug() << "文件" << caFileName << "分片上传完成并合并成功，路径：" << strUploadPath;
+                
+                // 计算并保存文件哈希，支持后续秒传
+                QString md5 = calculateFileMD5(strUploadPath);
+                if (!md5.isEmpty() && md5.size() == 32) {
+                    OperateDB::getInstance().addFileHash(md5, strUploadPath, m_totalFileSizes[strTaskId], caFileName);
+                    qDebug() << "文件哈希保存成功，MD5：" << md5;
+                }
             } else {
                 qWarning() << "文件合并失败，部分分片可能丢失";
             }

@@ -38,6 +38,14 @@ public:
     // 在class ResHandler的声明中添加
     void uploadFileSlice();
     void uploadFileComplete();
+    
+    // 下载相关消息处理函数
+    void downloadFile();
+    void downloadFileData();
+    void downloadFileComplete();
+    
+    // 重命名相关方法声明
+    void renameFileResponse(PDU* pdu);
 };
 
 #endif // RESHANDLER_H

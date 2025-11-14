@@ -178,6 +178,23 @@ void File::on_mvFile_PB_clicked()
 //}
 
 
+// 计算文件MD5的方法
+QString File::calculateFileMD5(const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qDebug() << "无法打开文件进行MD5计算:" << filePath;
+        return "";
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Md5);
+    while (!file.atEnd()) {
+        hash.addData(file.read(8192)); // 分块读取，避免内存占用过大
+    }
+    file.close();
+    return hash.result().toHex();
+}
+
 // 修改文件上传按钮点击事件，增加MD5计算
 void File::on_uploadFile_PB_clicked()
 {
@@ -196,19 +213,17 @@ void File::on_uploadFile_PB_clicked()
     QString md5 = calculateFileMD5(m_strUploadFilePath);
     qDebug() << "文件MD5: " << md5;
 
-    // 创建上传请求PDU，包含MD5信息
-    uint msgLen = m_strCurPath.toStdString().size() + md5.size() + 1;
-    PDU* pdu = mkPDU(msgLen);
-    pdu->uiType = ENUM_MSG_TYPE_UPLOAD_FILE_REQUEST;
-    memcpy(pdu->caData, strFileName.toStdString().c_str(), qMin(32, (int)strFileName.size()));
-    memcpy(pdu->caData + 32, &iFileSize, sizeof(qint64));
+    // 先查询MD5是否已存在，支持秒传
+    if (!md5.isEmpty()) {
+        PDU* queryPdu = mkPDU(md5.size() + 1);
+        queryPdu->uiType = ENUM_MSG_TYPE_QUERY_FILE_MD5_REQUEST;
+        memcpy(queryPdu->caMsg, md5.toStdString().c_str(), md5.size() + 1);
+        Client::getInstance().sendMsg(queryPdu);
+        return; // 等待MD5查询响应后再决定上传方式
+    }
 
-    // 存储当前路径和MD5到caMsg
-    memcpy(pdu->caMsg, m_strCurPath.toStdString().c_str(), m_strCurPath.toStdString().size());
-    memcpy(pdu->caMsg + m_strCurPath.toStdString().size(), md5.toStdString().c_str(), md5.size());
-    pdu->caMsg[msgLen - 1] = '\0';
-
-    Client::getInstance().sendMsg(pdu);
+    // 如果MD5计算失败，直接进行分片上传
+    uploadFile();
 }
 
 
@@ -225,17 +240,46 @@ void File::on_uploadFile_PB_clicked()
 // 在File类的uploadFile方法中
 void File::uploadFile()
 {
+    if (m_strUploadFilePath.isEmpty()) {
+        QMessageBox::warning(this, "警告", "请先选择文件");
+        return;
+    }
+
     QFileInfo fileInfo(m_strUploadFilePath);
     QString strFileName = fileInfo.fileName();
+    qint64 iFileSize = fileInfo.size();
     QString strServerPath = QString("%1/%2").arg(m_strCurPath).arg(strFileName);
+
+    // 计算文件MD5
+    QString md5 = calculateFileMD5(m_strUploadFilePath);
     
-    // 生成任务ID（使用文件名和时间戳的组合）
-    QString timestamp = QString::number(QDateTime::currentMSecsSinceEpoch());
-    QString taskId = QString("%1_%2").arg(strFileName).arg(timestamp);
+    // 生成任务ID
+    QString strTaskId = QUuid::createUuid().toString().replace("{", "").replace("}", "").replace("-", "");
     
-    // 创建上传器实例，使用2个线程（减少并发可能带来的问题）
-    Uploader* uploader = new Uploader(m_strUploadFilePath, 2);
-    uploader->m_strTaskId = taskId;
+    // 先创建上传请求，告诉服务器要上传文件
+    uint msgLen = m_strCurPath.toStdString().size() + md5.size() + 1;
+    PDU* pdu = mkPDU(msgLen);
+    pdu->uiType = ENUM_MSG_TYPE_UPLOAD_FILE_REQUEST;
+    memset(pdu->caData, 0, 32);
+    memcpy(pdu->caData, strFileName.toStdString().c_str(), qMin(32, (int)strFileName.size()));
+    memcpy(pdu->caData + 32, &iFileSize, sizeof(qint64));
+    
+    // 存储当前路径和MD5到caMsg
+    memset(pdu->caMsg, 0, msgLen);
+    memcpy(pdu->caMsg, m_strCurPath.toStdString().c_str(), m_strCurPath.toStdString().size());
+    memcpy(pdu->caMsg + m_strCurPath.toStdString().size(), md5.toStdString().c_str(), md5.size());
+    pdu->caMsg[msgLen - 1] = '\0';
+    
+    // 保存任务ID和MD5信息，用于后续上传分片
+    m_strTaskId = strTaskId;
+    m_strFileMD5 = md5;
+    
+    // 发送上传请求
+    Client::getInstance().sendMsg(pdu);
+    
+    // 创建上传器实例
+    Uploader* uploader = new Uploader(m_strUploadFilePath, 4); // 使用4个线程
+    uploader->m_strTaskId = strTaskId;
     uploader->m_strUploadPath = strServerPath;
     
     // 连接信号槽
@@ -256,8 +300,9 @@ void File::uploadFile()
     uploader->start();
     
     qDebug() << "开始上传文件：" << strFileName;
-    qDebug() << "任务ID：" << taskId;
+    qDebug() << "任务ID：" << strTaskId;
     qDebug() << "目标路径：" << strServerPath;
+    qDebug() << "文件MD5：" << md5;
 }
 
 // 添加一个新的槽函数来更新上传进度
@@ -411,19 +456,153 @@ void File::on_deleteFile_PB_clicked()
 
 
 
-// 添加MD5计算函数实现
-QString File::calculateFileMD5(const QString &filePath)
+// 下载文件按钮槽函数实现
+void File::on_downloadFile_PB_clicked()
 {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "无法打开文件计算MD5: " << filePath;
-        return "";
+    QListWidgetItem* pItem = ui->listWidget->currentItem();
+    if(pItem == NULL){
+        QMessageBox::warning(this, "提示", "请先选择要下载的文件");
+        return;
     }
 
-    QCryptographicHash hash(QCryptographicHash::Md5);
-    while (!file.atEnd()) {
-        hash.addData(file.read(8192)); // 分块读取计算
+    // 检查是否是文件夹
+    bool isDir = false;
+    foreach(FileInfo* pFileInfo, m_pFileList) {
+        if(pItem->text() == pFileInfo->caName) {
+            isDir = (pFileInfo->iType == 0);  // 0表示文件夹
+            break;
+        }
     }
-    file.close();
-    return hash.result().toHex();
+
+    if(isDir){
+        QMessageBox::warning(this, "提示", "暂不支持文件夹下载");
+        return;
+    }
+
+    // 获取完整文件路径
+    QString strFileName = pItem->text();
+    QString strFullPath = m_strCurPath + "/" + strFileName;
+
+    // 选择保存位置
+    QString strSavePath = QFileDialog::getSaveFileName(this, "保存文件", "./" + strFileName, "所有文件(*.*)");
+    if(strSavePath.isEmpty()){
+        qDebug() << "未选择保存位置";
+        return;
+    }
+
+    qDebug() << "准备下载文件：" << strFileName;
+    qDebug() << "服务器路径：" << strFullPath;
+    qDebug() << "本地保存路径：" << strSavePath;
+
+    // 发送下载文件请求
+    uint msgLen = strFullPath.toStdString().size() + 1;
+    PDU* pdu = mkPDU(msgLen);
+    pdu->uiType = ENUM_MSG_TYPE_DOWNLOAD_FILE_REQUEST;
+    memcpy(pdu->caData, strFileName.toStdString().c_str(), qMin(32, (int)strFileName.size()));
+    memcpy(pdu->caMsg, strFullPath.toStdString().c_str(), strFullPath.toStdString().size() + 1);
+    
+    // 保存下载信息
+    m_strDownloadFileName = strFileName;
+    m_strDownloadSavePath = strSavePath;
+    
+    Client::getInstance().sendMsg(pdu);
+    
+    // 这里可以添加下载进度提示
+    QMessageBox::information(this, "提示", "开始下载文件");
+}
+
+// 重命名按钮槽函数实现
+void File::on_rename_PB_clicked()
+{
+    QListWidgetItem* pItem = ui->listWidget->currentItem();
+    if(pItem == NULL){
+        QMessageBox::warning(this, "提示", "请先选择要重命名的文件或文件夹");
+        return;
+    }
+
+    QString strOldName = pItem->text();
+    QString strOldPath = m_strCurPath + "/" + strOldName;
+    
+    // 检查选中的是文件还是文件夹
+    bool isDir = false;
+    foreach(FileInfo* pFileInfo, m_pFileList) {
+        if(strOldName == pFileInfo->caName) {
+            isDir = (pFileInfo->iType == 0);  // 0表示文件夹
+            break;
+        }
+    }
+
+    // 获取文件扩展名（如果是文件）
+    QString strExt = "";
+    if(!isDir) {
+        int dotIndex = strOldName.lastIndexOf('.');
+        if(dotIndex != -1) {
+            strExt = strOldName.right(strOldName.size() - dotIndex);
+            strOldName = strOldName.left(dotIndex);
+        }
+    }
+
+    // 弹出重命名对话框
+    bool ok;
+    QString strNewName = QInputDialog::getText(this, "重命名", 
+                                             "请输入新名称：", 
+                                             QLineEdit::Normal, 
+                                             strOldName, 
+                                             &ok);
+    
+    if(ok && !strNewName.isEmpty()) {
+        // 如果是文件，添加回扩展名
+        if(!isDir && !strExt.isEmpty()) {
+            strNewName += strExt;
+        }
+
+        // 验证文件名是否有效
+        if(strNewName.contains('/') || strNewName.contains('\\') || 
+           strNewName.contains(':') || strNewName.contains('*') || 
+           strNewName.contains('?') || strNewName.contains('<') || 
+           strNewName.contains('>') || strNewName.contains('|') || 
+           strNewName.contains('"')) {
+            QMessageBox::warning(this, "错误", "文件名包含非法字符");
+            return;
+        }
+
+        // 检查新名称是否与当前目录下的其他文件或文件夹重名
+        foreach(FileInfo* pFileInfo, m_pFileList) {
+            if(strNewName == pFileInfo->caName && strOldName + strExt != pFileInfo->caName) {
+                QMessageBox::warning(this, "错误", "新名称与现有文件或文件夹重名");
+                return;
+            }
+        }
+
+        // 构建新路径
+        QString strNewPath = m_strCurPath + "/" + strNewName;
+        
+        qDebug() << "重命名：" << strOldPath << " -> " << strNewPath;
+        
+        // 发送重命名请求
+        uint uiOldNameLen = strOldName.toStdString().size() + 1;
+        uint uiNewNameLen = strNewName.toStdString().size() + 1;
+        uint uiPathLen = m_strCurPath.toStdString().size() + 1;
+        uint uiMsgLen = uiOldNameLen + uiNewNameLen + uiPathLen + sizeof(bool);
+        
+        PDU* pdu = mkPDU(uiMsgLen);
+        pdu->uiType = ENUM_MSG_TYPE_RENAME_FILE_REQUEST;
+        
+        // 填充消息数据
+        char* pData = pdu->caMsg;
+        memcpy(pData, &isDir, sizeof(bool));  // 先传输是否为文件夹
+        pData += sizeof(bool);
+        
+        memcpy(pData, strOldName.toStdString().c_str(), uiOldNameLen);
+        pData += uiOldNameLen;
+        
+        memcpy(pData, strNewName.toStdString().c_str(), uiNewNameLen);
+        pData += uiNewNameLen;
+        
+        memcpy(pData, m_strCurPath.toStdString().c_str(), uiPathLen);
+        
+        Client::getInstance().sendMsg(pdu);
+        
+        // 这里可以添加等待响应的处理
+    }
 }

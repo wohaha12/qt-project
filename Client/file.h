@@ -33,10 +33,6 @@ public:
     ShareFile* m_pShareFile;
     QString m_strShareFileName;
 
-    // 秒传相关方法 - 简化版本
-    QString calculateFileMD5(const QString &filePath);
-
-
 private slots:
     void on_mkDir_PB_clicked();
     void on_flushFile_PB_clicked();
@@ -46,6 +42,8 @@ private slots:
     void on_uploadFile_PB_clicked();
     void on_shareFile_PB_clicked();
     void on_deleteFile_PB_clicked();  // 新增删除文件按钮槽函数
+    void on_downloadFile_PB_clicked(); // 下载文件按钮槽函数
+    void on_rename_PB_clicked(); // 重命名按钮槽函数
 
 
 public slots:
@@ -55,6 +53,13 @@ public slots:
 
 private:
     Ui::File *ui;
+    QString m_strTaskId;    // 上传任务ID
+    QString m_strFileMD5;   // 文件MD5值
+    QString m_strDownloadFileName; // 下载文件名
+    QString m_strDownloadSavePath; // 下载保存路径
+    
+    // 计算文件MD5的方法
+    QString calculateFileMD5(const QString &filePath);
 };
 
 #endif // FILE_H

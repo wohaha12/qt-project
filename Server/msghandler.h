@@ -27,6 +27,15 @@ public:
     QMap<QString, qint64> m_receivedSizes; // 存储已接收的大小
     QMap<QString, int> m_totalSlices; // 存储总分片数
     QMap<QString, QSet<int>> m_receivedSlices; // 存储已接收的分片索引
+    
+    // 下载相关成员变量
+    QString m_strDownloadPath;  // 当前下载文件路径
+    qint64 m_iFileSize;        // 文件总大小
+    qint64 m_iSentSize;        // 已发送大小
+    
+private:
+    // 计算文件MD5的方法
+    QString calculateFileMD5(const QString &filePath);
 
     PDU* regist();
     PDU* login(QString& strLogiName);
@@ -52,6 +61,8 @@ public:
     // 新增分片上传相关方法
     PDU* uploadFileSlice(); // 处理分片上传请求
     PDU* uploadFileComplete(); // 处理上传完成请求
+    PDU* downloadFile();
+    PDU* downloadFileData();
 };
 
 #endif // MSGHANDLER_H
